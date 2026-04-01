@@ -6,7 +6,7 @@ echo "=== Setting up VM environment...       ==="
 
 # Install system deps
 sudo apt-get update -qq
-sudo apt-get install -y -qq git python3 python3-pip python3-venv wget unzip curl gnupg > /dev/null 2>&1
+sudo apt-get install -y -qq git python3 python3-pip python3-venv wget unzip curl gnupg imagemagick > /dev/null 2>&1
 
 # Install Google Chrome
 if ! command -v google-chrome &> /dev/null; then
