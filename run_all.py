@@ -101,12 +101,20 @@ def clone_repo(project):
         clone_url += ".git"
 
     print(f"  [clone] {clone_url}")
-    result = subprocess.run(
-        ["git", "clone", "--depth", "1", clone_url, dest],
-        capture_output=True, text=True, timeout=60,
-    )
+    env = os.environ.copy()
+    env["GIT_TERMINAL_PROMPT"] = "0"  # Never prompt for credentials
+    try:
+        result = subprocess.run(
+            ["git", "clone", "--depth", "1", clone_url, dest],
+            capture_output=True, text=True, timeout=60, env=env,
+        )
+    except subprocess.TimeoutExpired:
+        print(f"  [ERROR] Clone timed out")
+        shutil.rmtree(dest, ignore_errors=True)
+        return None
     if result.returncode != 0:
         print(f"  [ERROR] Clone failed: {result.stderr.strip()}")
+        shutil.rmtree(dest, ignore_errors=True)
         return None
     return dest
 
