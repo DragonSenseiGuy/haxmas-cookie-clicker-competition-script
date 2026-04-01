@@ -369,8 +369,11 @@ def take_screenshot(label):
 def kill_all_chrome():
     """Kill any leftover Chrome/chromedriver processes between runs."""
     for proc_name in ["chrome", "chromedriver", "chromium"]:
-        subprocess.run(["pkill", "-f", proc_name], capture_output=True)
-    time.sleep(1)
+        subprocess.run(["pkill", "-9", "-f", proc_name], capture_output=True)
+    time.sleep(2)
+    # Clear Chrome temp data to free memory/disk
+    subprocess.run("rm -rf /tmp/.com.google.Chrome.* /tmp/chrome_crashpad /tmp/.org.chromium.* /tmp/chromium* /tmp/Temp-*", shell=True, capture_output=True)
+    subprocess.run("rm -rf /dev/shm/.com.google.Chrome.*", shell=True, capture_output=True)
 
 
 def run_project(entry_point, label, timeout=TIMEOUT):
