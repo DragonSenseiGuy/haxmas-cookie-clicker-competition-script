@@ -470,6 +470,9 @@ def main():
         # Run
         stdout, stderr, rc, cookies, cps = run_project(entry, label)
 
+        # Kill Chrome immediately after each run
+        kill_all_chrome()
+
         if cookies:
             print(f"  [COOKIES] 🍪 {cookies} cookies (CPS: {cps})")
         else:
