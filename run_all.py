@@ -13,7 +13,10 @@ import signal
 import sys
 import re
 import json
+import resource
 import urllib.request
+
+MAX_MEM_MB = 2048  # Max 2GB per child process (Python + Chrome)
 
 WORKSPACE = os.path.dirname(os.path.abspath(__file__))
 REPOS_DIR = os.path.join(WORKSPACE, "repos")
@@ -368,12 +371,20 @@ def take_screenshot(label):
 
 def kill_all_chrome():
     """Kill any leftover Chrome/chromedriver processes between runs."""
-    for proc_name in ["chrome", "chromedriver", "chromium"]:
+    for proc_name in ["chrome", "chromedriver", "chromium", "google-chrome"]:
         subprocess.run(["pkill", "-9", "-f", proc_name], capture_output=True)
-    time.sleep(2)
+    time.sleep(3)
+    # Verify they're dead
+    result = subprocess.run(["pgrep", "-f", "chrome"], capture_output=True)
+    if result.returncode == 0:
+        subprocess.run(["killall", "-9", "chrome"], capture_output=True)
+        subprocess.run(["killall", "-9", "chromedriver"], capture_output=True)
+        time.sleep(2)
     # Clear Chrome temp data to free memory/disk
-    subprocess.run("rm -rf /tmp/.com.google.Chrome.* /tmp/chrome_crashpad /tmp/.org.chromium.* /tmp/chromium* /tmp/Temp-*", shell=True, capture_output=True)
-    subprocess.run("rm -rf /dev/shm/.com.google.Chrome.*", shell=True, capture_output=True)
+    subprocess.run("rm -rf /tmp/.com.google.Chrome.* /tmp/chrome_crashpad /tmp/.org.chromium.* /tmp/chromium* /tmp/Temp-* /tmp/rust_mozprofile* /tmp/.X*-lock 2>/dev/null", shell=True, capture_output=True)
+    subprocess.run("rm -rf /dev/shm/.com.google.Chrome.* /dev/shm/shm-* 2>/dev/null", shell=True, capture_output=True)
+    # Drop filesystem caches to free memory
+    subprocess.run("sync; echo 3 | sudo tee /proc/sys/vm/drop_caches > /dev/null 2>&1", shell=True, capture_output=True)
 
 
 def run_project(entry_point, label, timeout=TIMEOUT):
@@ -388,6 +399,15 @@ def run_project(entry_point, label, timeout=TIMEOUT):
     cookie_count = None
     cps = None
 
+    def _preexec():
+        os.setsid()
+        # Limit memory to prevent OOM-killing the whole VM
+        mem_bytes = MAX_MEM_MB * 1024 * 1024
+        try:
+            resource.setrlimit(resource.RLIMIT_AS, (mem_bytes, mem_bytes))
+        except Exception:
+            pass
+
     try:
         proc = subprocess.Popen(
             [sys.executable, entry_point],
@@ -395,7 +415,7 @@ def run_project(entry_point, label, timeout=TIMEOUT):
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             env=env,
-            preexec_fn=os.setsid,
+            preexec_fn=_preexec,
         )
 
         try:
