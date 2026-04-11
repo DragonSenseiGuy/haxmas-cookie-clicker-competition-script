@@ -372,21 +372,45 @@ def take_screenshot(label):
 
 
 def kill_all_chrome():
-    """Kill any leftover Chrome/chromedriver processes between runs."""
-    for proc_name in ["chrome", "chromedriver", "chromium", "google-chrome"]:
-        subprocess.run(["pkill", "-9", "-f", proc_name], capture_output=True)
-    time.sleep(3)
-    # Verify they're dead
-    result = subprocess.run(["pgrep", "-f", "chrome"], capture_output=True)
-    if result.returncode == 0:
-        subprocess.run(["killall", "-9", "chrome"], capture_output=True)
-        subprocess.run(["killall", "-9", "chromedriver"], capture_output=True)
-        time.sleep(2)
-    # Clear Chrome temp data to free memory/disk
-    subprocess.run("rm -rf /tmp/.com.google.Chrome.* /tmp/chrome_crashpad /tmp/.org.chromium.* /tmp/chromium* /tmp/Temp-* /tmp/rust_mozprofile* /tmp/.X*-lock 2>/dev/null", shell=True, capture_output=True)
-    subprocess.run("rm -rf /dev/shm/.com.google.Chrome.* /dev/shm/shm-* 2>/dev/null", shell=True, capture_output=True)
-    # Drop filesystem caches to free memory
-    subprocess.run("sync; echo 3 | sudo tee /proc/sys/vm/drop_caches > /dev/null 2>&1", shell=True, capture_output=True)
+    """Kill Chrome/chromedriver processes spawned by us, NOT Kasm's own processes.
+    Only kills processes whose parent is in our process tree (PPID = our PID or children)."""
+    our_pid = os.getpid()
+    try:
+        # Find all chrome/chromedriver PIDs and their parent PIDs
+        result = subprocess.run(
+            ["ps", "-eo", "pid,ppid,args"], capture_output=True, text=True, timeout=5
+        )
+        our_pids = {our_pid}
+        # Build set of PIDs in our process tree (children, grandchildren, etc.)
+        lines = result.stdout.strip().split("\n")
+        # Multiple passes to catch the full tree
+        for _ in range(5):
+            for line in lines:
+                parts = line.split(None, 2)
+                if len(parts) >= 2:
+                    try:
+                        pid, ppid = int(parts[0]), int(parts[1])
+                        if ppid in our_pids:
+                            our_pids.add(pid)
+                    except ValueError:
+                        pass
+
+        # Kill only chrome/chromedriver processes in our tree
+        for line in lines:
+            parts = line.split(None, 2)
+            if len(parts) >= 3:
+                try:
+                    pid = int(parts[0])
+                    cmd = parts[2].lower()
+                    if pid in our_pids and any(k in cmd for k in ["chrome", "chromedriver"]):
+                        os.kill(pid, signal.SIGKILL)
+                except (ValueError, ProcessLookupError, OSError):
+                    pass
+    except Exception:
+        pass
+    # Always safe to kill chromedriver (not a Kasm component)
+    subprocess.run(["pkill", "-9", "-f", "chromedriver"], capture_output=True)
+    time.sleep(1)
 
 
 def get_free_memory_mb():
