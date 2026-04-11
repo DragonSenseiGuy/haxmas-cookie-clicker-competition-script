@@ -4,6 +4,20 @@ set -e
 echo "=== Cookie Clicker Competition Runner ==="
 echo "=== Setting up VM environment...       ==="
 
+# Kill any leftover processes from previous runs
+echo "[setup] Cleaning up leftover processes..."
+pkill -9 -f Xvfb 2>/dev/null || true
+pkill -9 -f chrome 2>/dev/null || true
+pkill -9 -f chromedriver 2>/dev/null || true
+rm -rf /tmp/.X99-lock 2>/dev/null || true
+rm -rf /tmp/.com.google.Chrome.* /tmp/chrome_crashpad /tmp/.org.chromium.* 2>/dev/null || true
+sleep 1
+
+# Free up memory: drop caches
+sync; echo 3 | sudo tee /proc/sys/vm/drop_caches > /dev/null 2>&1 || true
+
+echo "[setup] Memory before setup: $(free -h | grep Mem | awk '{print "total=" $2 " used=" $3 " avail=" $7}')"
+
 # Install system deps
 sudo apt-get update -qq
 sudo apt-get install -y -qq git python3 python3-pip python3-venv wget unzip curl gnupg imagemagick > /dev/null 2>&1
@@ -86,13 +100,25 @@ fi
 echo "[setup] Swap: $(free -h | grep Swap | awk '{print $2}')"
 echo "[setup] Memory: $(free -h | grep Mem | awk '{print "total=" $2 " used=" $3 " free=" $4}')"
 
+# Free memory before starting Xvfb
+echo "[setup] Memory before Xvfb: $(free -h | grep Mem | awk '{print "total=" $2 " used=" $3 " avail=" $7}')"
+
 # Start virtual display for headless VM
 echo "[setup] Starting Xvfb virtual display..."
 sudo apt-get install -y -qq xvfb > /dev/null 2>&1
-export DISPLAY=:99
-Xvfb :99 -screen 0 1280x720x16 &
-XVFB_PID=$!
+pkill -9 -f Xvfb 2>/dev/null || true
+rm -f /tmp/.X99-lock 2>/dev/null || true
 sleep 1
+export DISPLAY=:99
+Xvfb :99 -screen 0 1024x768x8 -ac +extension GLX +render -noreset &
+XVFB_PID=$!
+sleep 2
+if ! kill -0 $XVFB_PID 2>/dev/null; then
+    echo "[setup] WARN: Xvfb failed to start, retrying with minimal settings..."
+    Xvfb :99 -screen 0 800x600x8 &
+    XVFB_PID=$!
+    sleep 2
+fi
 
 echo "[setup] Done! Starting competition runner..."
 echo ""
