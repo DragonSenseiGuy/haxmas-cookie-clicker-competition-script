@@ -200,6 +200,36 @@ def find_chrome_debug_ports():
     return ports
 
 
+def _parse_cookies_from_output(text):
+    """Fallback: try to extract cookie count from project stdout/stderr output."""
+    # Look for common patterns projects might print
+    patterns = [
+        r"[Cc]ookies?\s*(?:baked|earned|count|total)?[:\s=]+\s*([\d,]+)",
+        r"([\d,]+)\s*cookies?",
+        r"[Cc]ookie[s ]?[Cc]ount[:\s=]+\s*([\d,]+)",
+        r"[Tt]otal[:\s=]+\s*([\d,]+)",
+        r"[Ss]core[:\s=]+\s*([\d,]+)",
+    ]
+    best = None
+    for pattern in patterns:
+        for m in re.finditer(pattern, text):
+            val = m.group(1).replace(",", "")
+            try:
+                num = int(val)
+                if best is None or num > best:
+                    best = num
+            except ValueError:
+                pass
+    # Look for CPS
+    cps = None
+    cps_match = re.search(r"[Cc]ps[:\s=]+\s*([\d,.]+)", text)
+    if cps_match:
+        cps = cps_match.group(1)
+    if best is not None:
+        return str(best), cps
+    return None, None
+
+
 def scrape_cookie_count(label):
     """
     Connect to Chrome via CDP and extract the cookie count.
@@ -504,11 +534,18 @@ def run_project(entry_point, label, timeout=TIMEOUT):
         finally:
             watchdog_stop.set()
 
+        stdout_str = stdout.decode("utf-8", errors="replace") if isinstance(stdout, bytes) else stdout
+        stderr_str = stderr.decode("utf-8", errors="replace") if isinstance(stderr, bytes) else stderr
+
+        # Fallback: try to extract cookie count from stdout/stderr if scraping failed
+        if cookie_count is None:
+            cookie_count, cps = _parse_cookies_from_output(stdout_str + "\n" + stderr_str)
+
         status_note = "OOM_KILLED" if oom_killed else None
 
         return (
-            stdout.decode("utf-8", errors="replace"),
-            stderr.decode("utf-8", errors="replace"),
+            stdout_str,
+            stderr_str,
             proc.returncode,
             cookie_count,
             cps,
