@@ -51,7 +51,8 @@ def parse_projects(tsv_path):
             line = line.strip()
             if not line:
                 continue
-            parts = line.split("\t")
+            # Split on tabs or multiple spaces; take only the first column
+            parts = re.split(r"\t+|\s{2,}", line)
             repo_url = parts[0].strip()
 
             repo_url = repo_url.rstrip("#").rstrip("/")
