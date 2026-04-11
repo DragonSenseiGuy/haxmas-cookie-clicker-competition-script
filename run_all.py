@@ -16,7 +16,7 @@ import json
 import resource
 import urllib.request
 
-MAX_MEM_MB = 2048  # Max 2GB per child process (Python + Chrome)
+MAX_MEM_MB = 1024  # Max 1GB per child process (Python + Chrome)
 
 WORKSPACE = os.path.dirname(os.path.abspath(__file__))
 REPOS_DIR = os.path.join(WORKSPACE, "repos")
@@ -395,6 +395,8 @@ def run_project(entry_point, label, timeout=TIMEOUT):
 
     env = os.environ.copy()
     env.setdefault("DISPLAY", ":99")
+    # Limit Chrome memory usage to prevent OOM-killing the VM
+    env["CHROME_FLAGS"] = "--disable-dev-shm-usage --disable-gpu --no-sandbox --disable-extensions --disable-background-networking --disable-sync --disable-translate --js-flags=--max-old-space-size=512"
 
     cookie_count = None
     cps = None

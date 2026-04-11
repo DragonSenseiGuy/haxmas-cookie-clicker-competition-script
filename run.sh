@@ -58,19 +58,33 @@ pip3 install --break-system-packages -q selenium pyautogui Pillow 2>/dev/null ||
     pip3 install -q selenium pyautogui Pillow
 
 # Add swap space to prevent OOM crashes (non-fatal if it fails)
-if [ ! -f /swapfile ]; then
-    echo "[setup] Creating 2GB swap file to prevent OOM..."
-    if sudo fallocate -l 2G /swapfile 2>/dev/null || sudo dd if=/dev/zero of=/swapfile bs=1M count=2048 2>/dev/null; then
-        sudo chmod 600 /swapfile
-        sudo mkswap /swapfile > /dev/null 2>&1
-        sudo swapon /swapfile 2>/dev/null || true
-    else
-        echo "[setup] WARN: Could not create swap file, continuing without swap"
+# Try progressively smaller sizes until one works
+SWAP_CREATED=false
+for SWAP_SIZE in 1G 512M 256M; do
+    if [ "$SWAP_CREATED" = true ]; then break; fi
+    if [ -f /swapfile ]; then
+        sudo swapon /swapfile 2>/dev/null && SWAP_CREATED=true && break
+        # Existing swapfile but can't activate - remove and retry
+        sudo swapoff /swapfile 2>/dev/null || true
+        sudo rm -f /swapfile
     fi
-else
-    sudo swapon /swapfile 2>/dev/null || true
+    echo "[setup] Trying ${SWAP_SIZE} swap file..."
+    if sudo fallocate -l "$SWAP_SIZE" /swapfile 2>/dev/null || sudo dd if=/dev/zero of=/swapfile bs=1M count=$(($(echo "$SWAP_SIZE" | sed 's/G/*1024/;s/M//') )) 2>/dev/null; then
+        sudo chmod 600 /swapfile
+        if sudo mkswap /swapfile > /dev/null 2>&1 && sudo swapon /swapfile 2>/dev/null; then
+            SWAP_CREATED=true
+        else
+            sudo rm -f /swapfile
+        fi
+    else
+        sudo rm -f /swapfile
+    fi
+done
+if [ "$SWAP_CREATED" = false ]; then
+    echo "[setup] WARN: Could not create swap file, continuing without swap"
 fi
 echo "[setup] Swap: $(free -h | grep Swap | awk '{print $2}')"
+echo "[setup] Memory: $(free -h | grep Mem | awk '{print "total=" $2 " used=" $3 " free=" $4}')"
 
 # Start virtual display for headless VM
 echo "[setup] Starting Xvfb virtual display..."
