@@ -90,7 +90,7 @@ echo "[setup] Memory: $(free -h | grep Mem | awk '{print "total=" $2 " used=" $3
 echo "[setup] Starting Xvfb virtual display..."
 sudo apt-get install -y -qq xvfb > /dev/null 2>&1
 export DISPLAY=:99
-Xvfb :99 -screen 0 1920x1080x24 &
+Xvfb :99 -screen 0 1280x720x16 &
 XVFB_PID=$!
 sleep 1
 

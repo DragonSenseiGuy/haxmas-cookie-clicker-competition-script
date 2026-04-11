@@ -15,8 +15,10 @@ import re
 import json
 import resource
 import urllib.request
+import threading
 
 MAX_MEM_MB = 1024  # Max 1GB per child process (Python + Chrome)
+MIN_FREE_MB = 150  # Kill project if system free memory drops below this
 
 WORKSPACE = os.path.dirname(os.path.abspath(__file__))
 REPOS_DIR = os.path.join(WORKSPACE, "repos")
@@ -387,6 +389,18 @@ def kill_all_chrome():
     subprocess.run("sync; echo 3 | sudo tee /proc/sys/vm/drop_caches > /dev/null 2>&1", shell=True, capture_output=True)
 
 
+def get_free_memory_mb():
+    """Get available system memory in MB (MemAvailable from /proc/meminfo)."""
+    try:
+        with open("/proc/meminfo") as f:
+            for line in f:
+                if line.startswith("MemAvailable:"):
+                    return int(line.split()[1]) // 1024  # kB -> MB
+    except Exception:
+        pass
+    return 9999  # If we can't read, assume plenty
+
+
 def run_project(entry_point, label, timeout=TIMEOUT):
     """Run a project for `timeout` seconds, scrape cookies, then kill it."""
     work_dir = os.path.dirname(entry_point)
@@ -395,20 +409,31 @@ def run_project(entry_point, label, timeout=TIMEOUT):
 
     env = os.environ.copy()
     env.setdefault("DISPLAY", ":99")
-    # Limit Chrome memory usage to prevent OOM-killing the VM
-    env["CHROME_FLAGS"] = "--disable-dev-shm-usage --disable-gpu --no-sandbox --disable-extensions --disable-background-networking --disable-sync --disable-translate --js-flags=--max-old-space-size=512"
 
     cookie_count = None
     cps = None
+    oom_killed = False
 
     def _preexec():
         os.setsid()
-        # Limit memory to prevent OOM-killing the whole VM
-        mem_bytes = MAX_MEM_MB * 1024 * 1024
-        try:
-            resource.setrlimit(resource.RLIMIT_AS, (mem_bytes, mem_bytes))
-        except Exception:
-            pass
+
+    # Memory watchdog: monitors free memory and kills process group if too low
+    watchdog_stop = threading.Event()
+
+    def _memory_watchdog(proc):
+        nonlocal oom_killed
+        while not watchdog_stop.is_set():
+            free_mb = get_free_memory_mb()
+            if free_mb < MIN_FREE_MB:
+                print(f"  [OOM-GUARD] Free memory critically low ({free_mb}MB < {MIN_FREE_MB}MB), killing project!")
+                oom_killed = True
+                try:
+                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                except (ProcessLookupError, OSError):
+                    pass
+                kill_all_chrome()
+                return
+            watchdog_stop.wait(2)  # Check every 2 seconds
 
     try:
         proc = subprocess.Popen(
@@ -420,26 +445,41 @@ def run_project(entry_point, label, timeout=TIMEOUT):
             preexec_fn=_preexec,
         )
 
+        # Start memory watchdog thread
+        watchdog = threading.Thread(target=_memory_watchdog, args=(proc,), daemon=True)
+        watchdog.start()
+
         try:
             stdout, stderr = proc.communicate(timeout=timeout)
         except subprocess.TimeoutExpired:
-            print(f"  [scrape] Timeout reached, scraping cookie count before killing...")
+            if not oom_killed:
+                print(f"  [scrape] Timeout reached, scraping cookie count before killing...")
 
-            # Scrape cookie count from Chrome BEFORE killing
-            cookie_count, cps = scrape_cookie_count(label)
+                # Scrape cookie count from Chrome BEFORE killing
+                cookie_count, cps = scrape_cookie_count(label)
 
-            # Take a screenshot too
-            take_screenshot(label)
+                # Take a screenshot too
+                take_screenshot(label)
 
             # Now kill the process group
             print(f"  [kill] Killing process group...")
-            os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+            try:
+                os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+            except (ProcessLookupError, OSError):
+                pass
             time.sleep(2)
             try:
                 os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-            except ProcessLookupError:
+            except (ProcessLookupError, OSError):
                 pass
-            stdout, stderr = proc.communicate(timeout=5)
+            try:
+                stdout, stderr = proc.communicate(timeout=5)
+            except Exception:
+                stdout, stderr = b"", b""
+        finally:
+            watchdog_stop.set()
+
+        status_note = "OOM_KILLED" if oom_killed else None
 
         return (
             stdout.decode("utf-8", errors="replace"),
@@ -447,9 +487,11 @@ def run_project(entry_point, label, timeout=TIMEOUT):
             proc.returncode,
             cookie_count,
             cps,
+            status_note,
         )
     except Exception as e:
-        return ("", str(e), -1, None, None)
+        watchdog_stop.set()
+        return ("", str(e), -1, None, None, None)
 
 
 def main():
@@ -490,7 +532,7 @@ def main():
         install_deps(repo_path, project.get("subdir"))
 
         # Run
-        stdout, stderr, rc, cookies, cps = run_project(entry, label)
+        stdout, stderr, rc, cookies, cps, status_note = run_project(entry, label)
 
         # Kill Chrome immediately after each run
         kill_all_chrome()
@@ -500,7 +542,14 @@ def main():
         else:
             print(f"  [COOKIES] ❌ Could not scrape cookie count")
 
-        print(f"  [done] Return code: {rc}")
+        if status_note == "OOM_KILLED":
+            status = "OOM_KILLED"
+        elif rc in (0, -15, -9, None):
+            status = "OK"
+        else:
+            status = f"EXIT_{rc}"
+
+        print(f"  [done] Return code: {rc}" + (f" ({status_note})" if status_note else ""))
         if stdout.strip():
             lines = stdout.strip().split("\n")
             tail = "\n".join(lines[-20:])
@@ -512,7 +561,7 @@ def main():
 
         results.append({
             "project": label,
-            "status": "OK" if rc in (0, -15, -9, None) else f"EXIT_{rc}",
+            "status": status,
             "cookies": cookies,
             "cps": cps,
             "stdout": stdout,
