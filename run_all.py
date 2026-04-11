@@ -559,20 +559,6 @@ def run_project(entry_point, label, timeout=TIMEOUT):
         return ("", str(e), -1, None, None, None)
 
 
-CHROME_WRAPPER_SCRIPT = f"""#!/bin/bash
-# Wrapper that injects --remote-debugging-port into Chrome launches
-# Added by run_all.py for cookie scraping
-
-REAL_CHROME="$(dirname "$0")/google-chrome-stable.real"
-
-# Check if --remote-debugging-port is already set
-if echo "$@" | grep -q -- '--remote-debugging-port'; then
-    exec "$REAL_CHROME" "$@"
-else
-    exec "$REAL_CHROME" --remote-debugging-port={DEBUG_PORT} "$@"
-fi
-"""
-
 def setup_chrome_wrapper():
     """Wrap google-chrome-stable to inject --remote-debugging-port."""
     chrome_path = shutil.which("google-chrome-stable") or shutil.which("google-chrome")
@@ -580,24 +566,27 @@ def setup_chrome_wrapper():
         print("[setup] WARNING: Could not find Chrome binary to wrap")
         return None
 
+    # Resolve symlinks to find the real binary
+    real_chrome = os.path.realpath(chrome_path)
     chrome_dir = os.path.dirname(chrome_path)
     chrome_name = os.path.basename(chrome_path)
-    real_path = os.path.join(chrome_dir, f"{chrome_name}.real")
+    backup_path = os.path.join(chrome_dir, f"{chrome_name}.real")
 
-    if os.path.exists(real_path):
-        print(f"[setup] Chrome wrapper already in place")
-        return chrome_path
+    if os.path.exists(backup_path):
+        # Restore first in case a previous run left a broken wrapper
+        print(f"[setup] Restoring Chrome from previous wrapper before re-wrapping...")
+        subprocess.run(["sudo", "mv", backup_path, chrome_path], capture_output=True)
 
-    print(f"[setup] Wrapping {chrome_path} to inject --remote-debugging-port={DEBUG_PORT}")
+    print(f"[setup] Wrapping {chrome_path} (-> {real_chrome}) to inject --remote-debugging-port={DEBUG_PORT}")
     try:
-        subprocess.run(["sudo", "cp", chrome_path, real_path], check=True)
-        # Write wrapper script
-        wrapper_content = CHROME_WRAPPER_SCRIPT.replace(
-            'google-chrome-stable.real', f'{chrome_name}.real'
-        )
+        subprocess.run(["sudo", "cp", "-a", chrome_path, backup_path], check=True)
+
+        wrapper = f"""#!/bin/bash
+exec {backup_path} --remote-debugging-port={DEBUG_PORT} "$@"
+"""
         tmp_wrapper = "/tmp/chrome_wrapper.sh"
         with open(tmp_wrapper, "w") as f:
-            f.write(wrapper_content)
+            f.write(wrapper)
         subprocess.run(["sudo", "cp", tmp_wrapper, chrome_path], check=True)
         subprocess.run(["sudo", "chmod", "+x", chrome_path], check=True)
         os.remove(tmp_wrapper)
@@ -605,22 +594,21 @@ def setup_chrome_wrapper():
         return chrome_path
     except Exception as e:
         print(f"[setup] WARNING: Could not install Chrome wrapper: {e}")
-        # Restore original if something went wrong
-        if os.path.exists(real_path):
-            subprocess.run(["sudo", "cp", real_path, chrome_path], capture_output=True)
+        if os.path.exists(backup_path):
+            subprocess.run(["sudo", "mv", backup_path, chrome_path], capture_output=True)
         return None
 
 
 def teardown_chrome_wrapper():
     """Restore original Chrome binary."""
     for name in ["google-chrome-stable", "google-chrome"]:
-        chrome_path = shutil.which(name)
-        if not chrome_path:
+        path = shutil.which(name)
+        if not path:
             continue
-        real_path = os.path.join(os.path.dirname(chrome_path), f"{name}.real")
-        if os.path.exists(real_path):
+        backup = os.path.join(os.path.dirname(path), f"{name}.real")
+        if os.path.exists(backup):
             print(f"[cleanup] Restoring original Chrome binary")
-            subprocess.run(["sudo", "mv", real_path, chrome_path], capture_output=True)
+            subprocess.run(["sudo", "mv", backup, path], capture_output=True)
 
 
 def main():
