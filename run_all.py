@@ -25,6 +25,7 @@ REPOS_DIR = os.path.join(WORKSPACE, "repos")
 SCREENSHOTS_DIR = os.path.join(WORKSPACE, "screenshots")
 RESULTS_FILE = os.path.join(WORKSPACE, "results.txt")
 TIMEOUT = 60  # seconds
+DEBUG_PORT = 9222  # Injected into Chrome via wrapper
 
 # Common Python entry point filenames to look for, in priority order
 ENTRY_POINTS = [
@@ -187,6 +188,8 @@ def install_deps(repo_path, subdir=None):
 def find_chrome_debug_ports():
     """Find all Chrome remote debugging ports from running processes."""
     ports = []
+    # Always try our injected port first
+    ports.append(DEBUG_PORT)
     try:
         result = subprocess.run(["ps", "aux"], capture_output=True, text=True, timeout=5)
         for line in result.stdout.split("\n"):
@@ -556,6 +559,70 @@ def run_project(entry_point, label, timeout=TIMEOUT):
         return ("", str(e), -1, None, None, None)
 
 
+CHROME_WRAPPER_SCRIPT = f"""#!/bin/bash
+# Wrapper that injects --remote-debugging-port into Chrome launches
+# Added by run_all.py for cookie scraping
+
+REAL_CHROME="$(dirname "$0")/google-chrome-stable.real"
+
+# Check if --remote-debugging-port is already set
+if echo "$@" | grep -q -- '--remote-debugging-port'; then
+    exec "$REAL_CHROME" "$@"
+else
+    exec "$REAL_CHROME" --remote-debugging-port={DEBUG_PORT} "$@"
+fi
+"""
+
+def setup_chrome_wrapper():
+    """Wrap google-chrome-stable to inject --remote-debugging-port."""
+    chrome_path = shutil.which("google-chrome-stable") or shutil.which("google-chrome")
+    if not chrome_path:
+        print("[setup] WARNING: Could not find Chrome binary to wrap")
+        return None
+
+    chrome_dir = os.path.dirname(chrome_path)
+    chrome_name = os.path.basename(chrome_path)
+    real_path = os.path.join(chrome_dir, f"{chrome_name}.real")
+
+    if os.path.exists(real_path):
+        print(f"[setup] Chrome wrapper already in place")
+        return chrome_path
+
+    print(f"[setup] Wrapping {chrome_path} to inject --remote-debugging-port={DEBUG_PORT}")
+    try:
+        subprocess.run(["sudo", "cp", chrome_path, real_path], check=True)
+        # Write wrapper script
+        wrapper_content = CHROME_WRAPPER_SCRIPT.replace(
+            'google-chrome-stable.real', f'{chrome_name}.real'
+        )
+        tmp_wrapper = "/tmp/chrome_wrapper.sh"
+        with open(tmp_wrapper, "w") as f:
+            f.write(wrapper_content)
+        subprocess.run(["sudo", "cp", tmp_wrapper, chrome_path], check=True)
+        subprocess.run(["sudo", "chmod", "+x", chrome_path], check=True)
+        os.remove(tmp_wrapper)
+        print(f"[setup] Chrome wrapper installed")
+        return chrome_path
+    except Exception as e:
+        print(f"[setup] WARNING: Could not install Chrome wrapper: {e}")
+        # Restore original if something went wrong
+        if os.path.exists(real_path):
+            subprocess.run(["sudo", "cp", real_path, chrome_path], capture_output=True)
+        return None
+
+
+def teardown_chrome_wrapper():
+    """Restore original Chrome binary."""
+    for name in ["google-chrome-stable", "google-chrome"]:
+        chrome_path = shutil.which(name)
+        if not chrome_path:
+            continue
+        real_path = os.path.join(os.path.dirname(chrome_path), f"{name}.real")
+        if os.path.exists(real_path):
+            print(f"[cleanup] Restoring original Chrome binary")
+            subprocess.run(["sudo", "mv", real_path, chrome_path], capture_output=True)
+
+
 def main():
     tsv_path = os.path.join(WORKSPACE, "projects.tsv")
     projects = parse_projects(tsv_path)
@@ -563,6 +630,9 @@ def main():
 
     os.makedirs(REPOS_DIR, exist_ok=True)
     os.makedirs(SCREENSHOTS_DIR, exist_ok=True)
+
+    # Wrap Chrome to inject --remote-debugging-port for cookie scraping
+    setup_chrome_wrapper()
 
     results = []
 
@@ -630,8 +700,9 @@ def main():
             "stderr": stderr,
         })
 
-    # Kill any remaining Chrome
+    # Kill any remaining Chrome and restore Chrome binary
     kill_all_chrome()
+    teardown_chrome_wrapper()
 
     # Write results summary
     print(f"\n\n{'='*60}")
