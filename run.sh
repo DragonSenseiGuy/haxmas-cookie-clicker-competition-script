@@ -57,15 +57,19 @@ echo "[setup] Installing common Python packages..."
 pip3 install --break-system-packages -q selenium pyautogui Pillow 2>/dev/null || \
     pip3 install -q selenium pyautogui Pillow
 
-# Add swap space to prevent OOM crashes
+# Add swap space to prevent OOM crashes (non-fatal if it fails)
 if [ ! -f /swapfile ]; then
     echo "[setup] Creating 2GB swap file to prevent OOM..."
-    sudo fallocate -l 2G /swapfile 2>/dev/null || sudo dd if=/dev/zero of=/swapfile bs=1M count=2048 2>/dev/null
-    sudo chmod 600 /swapfile
-    sudo mkswap /swapfile > /dev/null 2>&1
-    sudo swapon /swapfile 2>/dev/null
+    if sudo fallocate -l 2G /swapfile 2>/dev/null || sudo dd if=/dev/zero of=/swapfile bs=1M count=2048 2>/dev/null; then
+        sudo chmod 600 /swapfile
+        sudo mkswap /swapfile > /dev/null 2>&1
+        sudo swapon /swapfile 2>/dev/null || true
+    else
+        echo "[setup] WARN: Could not create swap file, continuing without swap"
+    fi
+else
+    sudo swapon /swapfile 2>/dev/null || true
 fi
-sudo swapon /swapfile 2>/dev/null || true
 echo "[setup] Swap: $(free -h | grep Swap | awk '{print $2}')"
 
 # Start virtual display for headless VM
